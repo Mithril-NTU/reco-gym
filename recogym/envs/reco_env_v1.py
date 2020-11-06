@@ -25,7 +25,9 @@ env_1_args = {
         'number_of_flips': 0,
         'sigma_mu_organic': 3,
         'change_omega_for_bandits': False,
-        'normalize_beta': False
+        'normalize_beta': False,
+        'deterministic_reward': False,  # flag to enbale deterministic reward
+        'threshold_for_reward': 0.2,  # reward = 1 if ctr > threshold else 0, only work when deterministic_reward == True
     }
 }
 
@@ -120,6 +122,9 @@ class RecoEnv1(AbstractEnv):
             [0, 1],
             p=[1 - ctr[recommendation], ctr[recommendation]]
         )
+        if self.config.deterministic_reward:
+            #click = 1 if ctr[recommendation] > self.config.threshold_for_reward else 0
+            click = 1 if recommendation == np.argmax(ctr) else 0
         return click, ctr[recommendation]
 
     # Sample the next organic product view.
