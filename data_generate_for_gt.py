@@ -10,7 +10,7 @@ from recogym.agents import RandomAgent, random_args
 import sys
 from multiprocessing import Pool
 
-def gen_data(data, num_products, va_ratio=0.2, te_ratio=0.2):
+def gen_data(data, num_products, va_ratio=0.2, te_ratio=0.2, det_reward=False, det_reward_thres=0.02, accum=False):
     data = pd.DataFrame().from_dict(data)
 
     global process_helper
@@ -45,13 +45,18 @@ def gen_data(data, num_products, va_ratio=0.2, te_ratio=0.2):
                 assert (math.isnan(user_datum['v']))
 
                 action = int(user_datum['a'])
-                delta = int(user_datum['c'])
-                ps = user_datum['ctr']
+                if det_reward:
+                    delta = 1 if user_datum['ctr'] > det_reward_thres else 0
+                else:
+                    delta = int(user_datum['c'])
+                ps = user_datum['ps']
                 time = user_datum['t']
 
-                train_views = views
-
-                feature = np.sum(train_views, axis = 0)
+                if accum:
+                    train_views = views
+                    feature = np.sum(train_views, axis = 0)
+                else:
+                    feature = views[0, :].flatten()
                 feature = feature/np.linalg.norm(feature)
 
                 tmp_feature.append(feature)
@@ -108,20 +113,20 @@ def dump_svm(f, X, y_idx, y_propensity, y_value):
 def main():
     print('Need to change rng of user embedding generation first')
     root = sys.argv[1]
-    P = 100
+    P = 3000
     U = 20000
     
     env_1_args['random_seed'] = 8964
     env_1_args['random_seed_for_user'] = 2
     env_1_args['num_products'] = P
-    env_1_args['K'] = 5
+    env_1_args['K'] = 128
     env_1_args['sigma_omega'] = 0  # default 0.1, the varaince of user embedding changes with time.
     env_1_args['number_of_flips'] = P//2
     env_1_args['prob_leave_bandit'] = float(sys.argv[2])
     env_1_args['prob_leave_organic'] = 0.0
     env_1_args['prob_bandit_to_organic'] = 1 - env_1_args['prob_leave_bandit']
     env_1_args['prob_organic_to_bandit'] = 0.1
-    
+    env_1_args['deterministic_reward'] = True
     
     env = gym.make('reco-gym-v1')
     env.init_gym(env_1_args)
