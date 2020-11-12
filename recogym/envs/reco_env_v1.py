@@ -11,6 +11,7 @@ import numpy as np
 from numba import njit
 
 from .abstract import AbstractEnv, env_args, organic
+from numpy.random.mtrand import RandomState
 
 # Default arguments for toy environment ------------------------------------
 
@@ -53,19 +54,19 @@ class RecoEnv1(AbstractEnv):
         # high level transitions between organic, bandit and leave.
         self.state_transition = np.array([
             [0, self.config.prob_organic_to_bandit, self.config.prob_leave_organic],
-            [self.config.prob_bandit_to_organic, 0, self.config.prob_leave_organic],
+            [self.config.prob_bandit_to_organic, 0, self.config.prob_leave_bandit],
             [0.0, 0.0, 1.]
         ])
 
         self.state_transition[0, 0] = 1 - sum(self.state_transition[0, :])
         self.state_transition[1, 1] = 1 - sum(self.state_transition[1, :])
 
-        # Initialise Gamma for all products (Organic).
+        # Initialise Gamma for all products (Organic). mean, var = 0, 1
         self.Gamma = self.rng.normal(
             size=(self.config.num_products, self.config.K)
         )
 
-        # Initialise mu_organic.
+        # Initialise mu_organic. mean, var = 0, sigma_mu_organic(3)
         self.mu_organic = self.rng.normal(
             0, self.config.sigma_mu_organic,
             size=(self.config.num_products, 1)
@@ -77,9 +78,15 @@ class RecoEnv1(AbstractEnv):
     # Create a new user.
     def reset(self, user_id=0):
         super().reset(user_id)
-        self.omega = self.rng.normal(
-            0, self.config.sigma_omega_initial, size=(self.config.K, 1)
-        )
+        if self.config.random_seed_for_user is not None:
+            self.omega = self.user_rng.normal(
+                0, self.config.sigma_omega_initial, size=(self.config.K, 1)
+            ) # mean, var = 0, sigma_omega_initial(1)
+        else:
+            self.omega = self.rng.normal(
+                0, self.config.sigma_omega_initial, size=(self.config.K, 1)
+            ) # mean, var = 0, sigma_omega_initial(1)
+
 
     # Update user state to one of (organic, bandit, leave) and their omega (latent factor).
     def update_state(self):
@@ -96,7 +103,7 @@ class RecoEnv1(AbstractEnv):
             self.omega = self.rng.normal(
                 self.omega,
                 self.config.sigma_omega * omega_k, size=(self.config.K, 1)
-            )
+            ) # mean, var = omega, sigma_omega(1)
         self.context_switch = old_state != self.state
 
     # Sample a click as response to recommendation when user in bandit state
@@ -113,7 +120,7 @@ class RecoEnv1(AbstractEnv):
             [0, 1],
             p=[1 - ctr[recommendation], ctr[recommendation]]
         )
-        return click
+        return click, ctr[recommendation]
 
     # Sample the next organic product view.
     def update_product_view(self):

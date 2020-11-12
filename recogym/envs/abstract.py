@@ -21,6 +21,7 @@ env_args = {
     'num_products': 10,
     'num_users': 100,
     'random_seed': np.random.randint(2 ** 31 - 1),
+    'random_seed_for_user': None, # if set, the random seed for user embedding generation will be changed.
     # Markov State Transition Probabilities.
     'prob_leave_bandit': 0.01,
     'prob_leave_organic': 0.01,
@@ -60,6 +61,9 @@ class AbstractEnv(gym.Env, ABC):
         # Initialize Random State.
         assert (self.config.random_seed is not None)
         self.rng = RandomState(self.config.random_seed + epoch)
+        if self.config.random_seed_for_user is not None:
+            assert isinstance(self.config.random_seed_for_user, int)
+            self.user_rng = RandomState(self.config.random_seed_for_user + epoch)
 
     def init_gym(self, args):
 
@@ -138,11 +142,13 @@ class AbstractEnv(gym.Env, ABC):
                 product_view - if Markov state is `organic` then it is an int
                                between 1 and P where P is the number of
                                products otherwise it is None.
-            reward (float) :
+            reward (tuple) :
+                a tuple of values (click, ctr), ctr is click-through-rate which
+                means the probability of user clicking.
                 if the previous state was
-                    `bandit` - then reward is 1 if the user clicked on the ad
-                               you recommended otherwise 0
-                    `organic` - then reward is None
+                    `bandit` - then reward is (1, ctr) if the user clicked on the ad
+                               you recommended otherwise (0, ctr)
+                    `organic` - then reward is (None, None)
             done (bool) :
                 whether it's time to reset the environment again.
                 An episode is over at the end of a user's timeline (all of
@@ -166,19 +172,16 @@ class AbstractEnv(gym.Env, ABC):
                     ),
                     sessions
                 ),
-                None,
+                (None, None),
                 self.state == stop,
                 info
             )
 
         assert (action_id is not None)
         # Calculate reward from action.
-        reward = self.draw_click(action_id)
+        reward = self.draw_click(action_id)  # (click ,ctr)
 
         self.update_state()
-
-        if reward == 1:
-            self.state = organic  # After a click, Organic Events always follow.
 
         # Markov state dependent logic.
         if self.state == organic:
@@ -221,13 +224,14 @@ class AbstractEnv(gym.Env, ABC):
                 }
 
         if done:
+            reward = self.draw_click(action['a'])  # (click ,ctr)
             return (
                 action,
                 Observation(
                     DefaultContext(self.current_time, self.current_user_id),
                     self.empty_sessions
                 ),
-                0,
+                reward,
                 done,
                 None
             )
@@ -260,6 +264,7 @@ class AbstractEnv(gym.Env, ABC):
             'v': [],
             'a': [],
             'c': [],
+            'ctr': [],
             'ps': [],
             'ps-a': [],
         }
@@ -274,6 +279,7 @@ class AbstractEnv(gym.Env, ABC):
                 data['v'].append(session['v'])
                 data['a'].append(None)
                 data['c'].append(None)
+                data['ctr'].append(None)
                 data['ps'].append(None)
                 data['ps-a'].append(None)
 
@@ -285,7 +291,8 @@ class AbstractEnv(gym.Env, ABC):
                 data['z'].append('bandit')
                 data['v'].append(None)
                 data['a'].append(action['a'])
-                data['c'].append(reward)
+                data['c'].append(reward[0])
+                data['ctr'].append(reward[1])
                 data['ps'].append(action['ps'])
                 data['ps-a'].append(action['ps-a'] if 'ps-a' in action else ())
 
@@ -309,19 +316,95 @@ class AbstractEnv(gym.Env, ABC):
                 _store_bandit(action, reward)
 
             _store_organic(observation)
-            action, _, reward, done, _ = self.step_offline(
-                observation, reward, done
-            )
-            assert done, 'Done must not be changed!'
-            _store_bandit(action, reward)
 
         data['t'] = np.array(data['t'], dtype=np.float32)
-        data['u'] = pd.array(data['u'], dtype=pd.UInt16Dtype())
-        data['v'] = pd.array(data['v'], dtype=pd.UInt16Dtype())
-        data['a'] = pd.array(data['a'], dtype=pd.UInt16Dtype())
+        data['u'] = pd.array(data['u'], dtype=pd.UInt32Dtype())
+        data['v'] = pd.array(data['v'], dtype=pd.UInt32Dtype())
+        data['a'] = pd.array(data['a'], dtype=pd.UInt32Dtype())
         data['c'] = np.array(data['c'], dtype=np.float32)
+        data['ctr'] = np.array(data['ctr'], dtype=np.float32)
 
         if agent:
             self.agent = old_agent
+
+        return pd.DataFrame().from_dict(data)
+
+    def generate_gt(
+            self,
+            num_offline_users: int,
+    ):
+        data = {
+            't': [],
+            'u': [],
+            'z': [],
+            'v': [],
+            'a': [],
+            'c': [],
+            'ctr': [],
+            'ps': [],
+            'ps-a': [],
+        }
+
+        def _store_organic(observation):
+            assert (observation is not None)
+            assert (observation.sessions() is not None)
+            for session in observation.sessions():
+                data['t'].append(session['t'])
+                data['u'].append(session['u'])
+                data['z'].append('organic')
+                data['v'].append(session['v'])
+                data['a'].append(None)
+                data['c'].append(None)
+                data['ctr'].append(None)
+                data['ps'].append(None)
+                data['ps-a'].append(None)
+
+        def _store_bandit(action, reward):
+            if action:
+                assert (reward is not None)
+                data['t'].append(action['t'])
+                data['u'].append(action['u'])
+                data['z'].append('bandit')
+                data['v'].append(None)
+                data['a'].append(action['a'])
+                data['c'].append(reward[0])
+                data['ctr'].append(reward[1])
+                data['ps'].append(action['ps'])
+                data['ps-a'].append(action['ps-a'] if 'ps-a' in action else ())
+
+        unique_user_id = 0
+        all_actions = np.arange(self.config.num_products)
+        for _ in trange(num_offline_users, desc='Users'):
+            self.reset(unique_user_id)
+            unique_user_id += 1
+            observation, reward, done, _ = self.step(None)
+
+            while not done:
+                _store_organic(observation)
+                for action in all_actions:
+                    if action == 0:
+                        observation, reward, done, info = self.step(0)
+                    else:
+                        reward = self.draw_click(action)
+                    action = {
+                        't': observation.context().time(),
+                        'u': observation.context().user(),
+                        'a': action,
+                        'ps': 1.0,
+                        'ps-a': (
+                            np.ones(self.config.num_products) / self.config.num_products
+                            if self.config.with_ps_all else
+                            ()
+                        ),
+                    }
+                    _store_bandit(action, reward)
+            _store_organic(observation)
+
+        data['t'] = np.array(data['t'], dtype=np.float32)
+        data['u'] = pd.array(data['u'], dtype=pd.UInt32Dtype())
+        data['v'] = pd.array(data['v'], dtype=pd.UInt32Dtype())
+        data['a'] = pd.array(data['a'], dtype=pd.UInt32Dtype())
+        data['c'] = np.array(data['c'], dtype=np.float32)
+        data['ctr'] = np.array(data['ctr'], dtype=np.float32)
 
         return pd.DataFrame().from_dict(data)
