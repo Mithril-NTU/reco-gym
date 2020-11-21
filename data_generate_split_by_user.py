@@ -10,7 +10,7 @@ from recogym.agents import RandomAgent, random_args
 import sys
 from multiprocessing import Pool
 
-def gen_data(data, num_products, va_ratio=0.2, te_ratio=0.2, det_reward=False, det_reward_thres=0.02, accum=False):
+def gen_data(data, num_products, num_users, va_ratio=0.2, te_ratio=0.2, det_reward=False, det_reward_thres=0.02, accum=False, use_id=True):
     data = pd.DataFrame().from_dict(data)
 
     global process_helper
@@ -20,8 +20,12 @@ def gen_data(data, num_products, va_ratio=0.2, te_ratio=0.2, det_reward=False, d
         tmp_ps = []
         tmp_delta = []
         tmp_set_flag = []
-
-        views = np.zeros((0, num_products))
+        
+        if use_id:
+            feature_dim = num_products+num_users
+        else:
+            feature_dim = num_products
+        views = np.zeros((0, feature_dim))
         history = np.zeros((0, 1))
         for _, user_datum in data[data['u'] == user_id].iterrows():
             assert (not math.isnan(user_datum['t']))
@@ -32,7 +36,7 @@ def gen_data(data, num_products, va_ratio=0.2, te_ratio=0.2, det_reward=False, d
 
                 view = int(user_datum['v'])
 
-                tmp_view = np.zeros(num_products)
+                tmp_view = np.zeros(feature_dim)
                 tmp_view[view] = 1
 
                 # Append the latest view at the beginning of all views.
@@ -52,12 +56,14 @@ def gen_data(data, num_products, va_ratio=0.2, te_ratio=0.2, det_reward=False, d
                 ps = user_datum['ps']
                 time = user_datum['t']
                 
-                if accum:
-                    train_views = views
-                    feature = np.sum(train_views, axis = 0)
-                else:
-                    feature = views[0, :].flatten()
+                train_views = views
+                feature = np.sum(train_views, axis = 0)
                 feature = feature/np.linalg.norm(feature)
+                if use_id:
+                    feature[num_products+user_id] = 1
+
+                if not accum:
+                    views = np.zeros((0, feature_dim))
 
                 tmp_feature.append(feature)
                 tmp_action.append(action)
@@ -113,27 +119,33 @@ def dump_svm(f, X, y_idx, y_propensity, y_value):
 def main():
     root = sys.argv[1]
     P = 3000
-    U = 50000 # 5w context
+    U = 100000
+    use_id = True 
     
     env_1_args['random_seed'] = 8964
     env_1_args['num_products'] = P
-    env_1_args['K'] = 128
+    env_1_args['K'] = 32
     env_1_args['sigma_omega'] = 0.0  # default 0.1, the varaince of user embedding changes with time.
-    env_1_args['number_of_flips'] = P//2
+    env_1_args['number_of_flips'] = 0 #P//2
     env_1_args['prob_leave_bandit'] = float(sys.argv[2])
     env_1_args['prob_leave_organic'] = 0.0
     env_1_args['prob_bandit_to_organic'] = 1 - env_1_args['prob_leave_bandit']
-    env_1_args['prob_organic_to_bandit'] = 0.1
+    env_1_args['prob_organic_to_bandit'] = 0.05
     env_1_args['deterministic_reward'] = True
+    with open('%s/env_setting.info'%root, 'w') as info:
+        print(env_1_args)
+        print('num_of_users: %d, num_of_expected_context: %d'%(U, U/env_1_args['prob_leave_bandit']))
+        print(env_1_args, file=info)
+        print('num_of_users: %d, num_of_expected_context: %d'%(U, U/env_1_args['prob_leave_bandit']), file=info)
     
     env = gym.make('reco-gym-v1')
     env.init_gym(env_1_args)
     
-    data = env.generate_logs(U)
-    data.to_csv('%s/data_%d_%d.csv'%(root, P, U), index=False)
-    #data = pd.read_csv('%s/data_%d_%d.csv'%(root, P, U))
+    #data = env.generate_logs(U)
+    #data.to_csv('%s/data_%d_%d.csv'%(root, P, U), index=False)
+    data = pd.read_csv('%s/data_%d_%d.csv'%(root, P, U))
     
-    features, actions, deltas, pss, set_flags = gen_data(data, P)
+    features, actions, deltas, pss, set_flags = gen_data(data, P, U, use_id=use_id)
     tr_num = int(U*0.6)
     va_num = int(U*0.2)
     with open('%s/tr.nonmerge.uniform.svm'%root, 'w') as tr, \
