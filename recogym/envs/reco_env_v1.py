@@ -124,7 +124,8 @@ class RecoEnv1(AbstractEnv):
         )
         if self.config.deterministic_reward:
             #click = 1 if ctr[recommendation] > self.config.threshold_for_reward else 0
-            click = 1 if recommendation in np.argsort(ctr)[:30] else 0
+            _n = int(np.ceil(0.01 * self.config.num_products))
+            click = 1 if recommendation in np.argsort(ctr)[:_n] else 0
         return click, ctr[recommendation]
 
     # Sample the next organic product view.
