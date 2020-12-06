@@ -91,12 +91,12 @@ def process_helper(num_products, num_users, root, va_ratio, te_ratio, det_reward
             np.array(tmp_ps), \
             np.array(tmp_set_flag)
 
-def gen_data(data, num_products, num_users, root, va_ratio=0.2, te_ratio=0.2, det_reward=False, det_reward_thres=0.02, accum=False, use_userid=False):
+def gen_data(data, num_products, num_users, root, start_user_id=0, va_ratio=0.2, te_ratio=0.2, det_reward=False, det_reward_thres=0.02, accum=False, use_userid=False):
     #data = pd.DataFrame().from_dict(data)
     data = data.groupby('u')
     root = os.path.join(root, 'pkls')
     os.makedirs(root, exist_ok=True)
-    for i in tqdm(range(num_users)):
+    for i in tqdm(range(start_user_id, start_user_id + num_users)):
         f = open('%s/%08d.pkl'%(root, i), 'wb')
         pickle.dump(data.get_group(i), f)
         f.close()
@@ -106,7 +106,7 @@ def gen_data(data, num_products, num_users, root, va_ratio=0.2, te_ratio=0.2, de
     #    output = list(tqdm(p.map(process_helper, np.arange(num_users)), total=num_users))
     output = process_map(partial(process_helper, num_products, num_users, root, \
             va_ratio, te_ratio, det_reward, det_reward_thres, accum, use_userid), \
-            np.arange(num_users), max_workers=8)#, chunksize=10000)
+            np.arange(start_user_id, start_user_id + num_users), max_workers=8, chunksize=1)
     features, actions, deltas, pss, set_flags = zip(*output)
 
     return features, actions, deltas, pss, set_flags
@@ -138,11 +138,14 @@ def dump_svm(f, X, y_idx, y_propensity, y_value):
 
 def main():
     root = sys.argv[1]
+    os.makedirs(root, exist_ok=True)
     P = 3000
     U = 500000
     use_userid = False 
+    start_user_id = int(sys.argv[4])*U
     
     env_1_args['random_seed'] = 8964
+    env_1_args['random_seed_for_user'] = int(sys.argv[3]) 
     env_1_args['num_products'] = P
     env_1_args['K'] = 32
     env_1_args['sigma_omega'] = 0.0  # default 0.1, the varaince of user embedding changes with time.
@@ -152,21 +155,23 @@ def main():
     env_1_args['prob_bandit_to_organic'] = 1 - env_1_args['prob_leave_bandit']
     env_1_args['prob_organic_to_bandit'] = 0.05
     env_1_args['deterministic_reward'] = True
-    with open('%s/env_setting.info'%root, 'w') as info:
-        print(env_1_args)
-        print('num_of_users: %d, num_of_expected_context: %d'%(U, U/env_1_args['prob_leave_bandit']))
-        print(env_1_args, file=info)
-        print('num_of_users: %d, num_of_expected_context: %d'%(U, U/env_1_args['prob_leave_bandit']), file=info)
+    #with open('%s/env_setting.info'%root, 'w') as info:
+    #    print(env_1_args)
+    #    print('num_of_users: %d, num_of_expected_context: %d'%(U, U/env_1_args['prob_leave_bandit']))
+    #    print(env_1_args, file=info)
+    #    print('num_of_users: %d, num_of_expected_context: %d'%(U, U/env_1_args['prob_leave_bandit']), file=info)
     
     env = gym.make('reco-gym-v1')
     env.init_gym(env_1_args)
     
-    data = env.generate_logs(U)
-    data.to_csv('%s/data_%d_%d.csv'%(root, P, U), index=False)
-    #data = pd.read_csv('%s/data_%d_%d.csv'%(root, P, U))
-    #print('Data loaded!')
+    env.reset_random_seed(epoch = env_1_args['random_seed_for_user'])
+    #data = env.generate_logs(U, unique_user_id=start_user_id)
+    #data.to_csv('%s/data_%d_%d.csv'%(root, P, U), index=False)
+    #sys.exit(0)
+    data = pd.read_csv('%s/data_%d_%d.csv'%(root, P, U))
+    print('Data loaded!')
     
-    features, actions, deltas, pss, set_flags = gen_data(data, P, U, root, use_userid=use_userid)
+    features, actions, deltas, pss, set_flags = gen_data(data, P, U, root, use_userid=use_userid, start_user_id=start_user_id)
     tr_num = int(U*0.6)
     va_num = int(U*0.2)
     with open('%s/tr.nonmerge.uniform.svm'%root, 'w') as tr, \

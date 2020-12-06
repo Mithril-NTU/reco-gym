@@ -246,6 +246,7 @@ class AbstractEnv(gym.Env, ABC):
             self,
             num_offline_users: int,
             agent: Agent = None,
+            unique_user_id: int = 0,
             num_organic_offline_users: int = 0
     ):
         """
@@ -296,7 +297,6 @@ class AbstractEnv(gym.Env, ABC):
                 data['ps'].append(action['ps'])
                 data['ps-a'].append(action['ps-a'] if 'ps-a' in action else ())
 
-        unique_user_id = 0
         for _ in trange(num_organic_offline_users, desc='Organic Users'):
             self.reset(unique_user_id)
             unique_user_id += 1
